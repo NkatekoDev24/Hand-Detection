@@ -1,96 +1,118 @@
 import streamlit as st
-from streamlit_webrtc import webrtc_streamer
+from streamlit_webrtc import webrtc_streamer, RTCConfiguration, VideoProcessorBase
 import av
+import cv2
 import mediapipe as mp
 import numpy as np
-import cv2
 
-st.title("Hand Gesture Detection")
-st.write("Allow camera access to start gesture detection")
+# Page config
+st.set_page_config(page_title="Hand Gesture Detection")
 
 # Initialize MediaPipe
 mp_hands = mp.solutions.hands
-mp_draw = mp.solutions.drawing_utils
-hands = mp_hands.Hands(
-    max_num_hands=1,
-    min_detection_confidence=0.7,
-    min_tracking_confidence=0.7
-)
+mp_drawing = mp.solutions.drawing_utils
 
-# Gesture detection class
-class GestureDetector:
-    def __init__(self):
+# Streamlit UI
+st.title("Hand Gesture Detection")
+st.write("Once you allow camera access, you should see the webcam feed below.")
+
+# Sidebar controls
+with st.sidebar:
+    st.header("Settings")
+    detection_confidence = st.slider("Detection Confidence", 0.0, 1.0, 0.5)
+    tracking_confidence = st.slider("Tracking Confidence", 0.0, 1.0, 0.5)
+
+# Status indicator
+status_placeholder = st.empty()
+
+class GestureDetector(VideoProcessorBase):
+    def __init__(self) -> None:
         self.hands = mp_hands.Hands(
-            max_num_hands=1,
-            min_detection_confidence=0.7,
-            min_tracking_confidence=0.7
+            static_image_mode=False,
+            max_num_hands=2,
+            min_detection_confidence=detection_confidence,
+            min_tracking_confidence=tracking_confidence
         )
-
-    def process(self, frame):
-        # Convert frame to RGB
-        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         
-        # Process the frame for hand detection
-        results = self.hands.process(frame_rgb)
+    def recv(self, frame: av.VideoFrame) -> av.VideoFrame:
+        img = frame.to_ndarray(format="bgr24")
+        
+        # Flip the image for selfie view
+        img = cv2.flip(img, 1)
+        
+        # Convert to RGB for MediaPipe
+        rgb_frame = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        results = self.hands.process(rgb_frame)
         
         if results.multi_hand_landmarks:
             for hand_landmarks in results.multi_hand_landmarks:
                 # Draw landmarks
-                mp_draw.draw_landmarks(
-                    frame,
+                mp_drawing.draw_landmarks(
+                    img,
                     hand_landmarks,
-                    mp_hands.HAND_CONNECTIONS
+                    mp_hands.HAND_CONNECTIONS,
+                    mp_drawing.DrawingSpec(color=(255, 0, 255), thickness=2, circle_radius=2),
+                    mp_drawing.DrawingSpec(color=(20, 180, 90), thickness=2, circle_radius=2)
                 )
                 
-                # Get landmarks
-                landmarks = []
-                for lm in hand_landmarks.landmark:
-                    landmarks.append([lm.x, lm.y])
+                # Get landmark positions
+                thumb_tip = hand_landmarks.landmark[mp_hands.HandLandmark.THUMB_TIP]
+                index_tip = hand_landmarks.landmark[mp_hands.HandLandmark.INDEX_FINGER_TIP]
+                middle_tip = hand_landmarks.landmark[mp_hands.HandLandmark.MIDDLE_FINGER_TIP]
+                ring_tip = hand_landmarks.landmark[mp_hands.HandLandmark.RING_FINGER_TIP]
+                pinky_tip = hand_landmarks.landmark[mp_hands.HandLandmark.PINKY_TIP]
                 
-                # Detect gestures
-                if landmarks[4][1] > landmarks[3][1]:      # Thumb is down
-                    cv2.putText(frame, "THUMBS DOWN", (10, 50), 
-                              cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
-                elif landmarks[4][1] < landmarks[3][1]:    # Thumb is up
-                    cv2.putText(frame, "THUMBS UP", (10, 50), 
-                              cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+                # Calculate distances for gesture detection
+                distance_thumb_index = np.sqrt(
+                    (thumb_tip.x - index_tip.x)**2 + 
+                    (thumb_tip.y - index_tip.y)**2
+                )
                 
-                # Check if hand is open or closed
-                if (landmarks[8][1] < landmarks[6][1] and    # Index finger up
-                    landmarks[12][1] < landmarks[10][1] and  # Middle finger up
-                    landmarks[16][1] < landmarks[14][1] and  # Ring finger up
-                    landmarks[20][1] < landmarks[18][1]):    # Pinky up
-                    cv2.putText(frame, "OPEN HAND", (10, 90), 
-                              cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 2)
+                # Basic gesture detection
+                if thumb_tip.y < index_tip.y:  # Thumb above index
+                    if distance_thumb_index > 0.1:
+                        gesture = "Thumbs Up"
+                    else:
+                        gesture = "Closed Hand"
+                else:  # Thumb below index
+                    if distance_thumb_index > 0.1:
+                        gesture = "Thumbs Down"
+                    else:
+                        gesture = "Pointing"
                 
-        return frame
-
-# Video processor
-class VideoProcessor:
-    def __init__(self):
-        self.detector = GestureDetector()
-
-    def recv(self, frame):
-        img = frame.to_ndarray(format="bgr24")
-        img = cv2.flip(img, 1)  # Mirror image
-        
-        # Process frame
-        img = self.detector.process(img)
+                # Draw gesture text
+                cv2.putText(
+                    img, 
+                    gesture, 
+                    (10, 30), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 
+                    1, 
+                    (0, 255, 0), 
+                    2
+                )
         
         return av.VideoFrame.from_ndarray(img, format="bgr24")
 
-# Create webrtc streamer
-webrtc_streamer(
-    key="gesture_detection",
-    video_processor_factory=VideoProcessor,
-    media_stream_constraints={"video": True, "audio": False},
-    async_processing=True,
+# WebRTC Configuration
+RTC_CONFIGURATION = RTCConfiguration(
+    {"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
 )
 
-st.write("Instructions:")
-st.write("1. Allow camera access when prompted")
-st.write("2. Show your hand to the camera")
-st.write("3. Try these gestures:")
-st.write("   - Thumbs up")
-st.write("   - Thumbs down")
-st.write("   - Open hand (all fingers extended)")
+# Create WebRTC streamer
+try:
+    webrtc_ctx = webrtc_streamer(
+        key="gesture-detection",
+        mode=webrtc_streamer.WebRtcMode.SENDRECV,
+        rtc_configuration=RTC_CONFIGURATION,
+        video_processor_factory=GestureDetector,
+        media_stream_constraints={"video": True, "audio": False},
+        async_processing=True,
+    )
+    
+    if webrtc_ctx.state.playing:
+        status_placeholder.success("Webcam is running! Make gestures to see them detected.")
+    else:
+        status_placeholder.info("Click the 'START' button to begin.")
+except Exception as e:
+    st.error(f"Error accessing webcam: {str(e)}")
+    st.info("Please make sure to allow camera access when prompted by your browser.")
