@@ -1,8 +1,11 @@
+# file_path: app.py
+
 import streamlit as st
 import cv2
 import mediapipe as mp
 import numpy as np
 from PIL import Image
+import time
 
 # Initialize MediaPipe hands and drawing utils
 mp_drawing = mp.solutions.drawing_utils
@@ -17,19 +20,33 @@ st.sidebar.title("Settings")
 min_detection_confidence = st.sidebar.slider("Min Detection Confidence", 0.0, 1.0, 0.8)
 min_tracking_confidence = st.sidebar.slider("Min Tracking Confidence", 0.0, 1.0, 0.5)
 
-# Placeholder for video output
-frame_window = st.image([])
+# Initialize session state for webcam control
+if "run" not in st.session_state:
+    st.session_state.run = False
 
-# Streamlit button to control the webcam
-start_webcam = st.button("Start")
-stop_webcam = st.button("Stop")
+# Streamlit buttons for webcam control
+start_webcam = st.button("Start Webcam")
+stop_webcam = st.button("Stop Webcam")
+
+if start_webcam:
+    st.session_state.run = True
+
+if stop_webcam:
+    st.session_state.run = False
+
+# Placeholder for video output
+frame_window = st.empty()
 
 # Webcam input processing
-if start_webcam:
+if st.session_state.run:
     capture = cv2.VideoCapture(0)
+    if not capture.isOpened():
+        st.error("Webcam not accessible!")
+        st.session_state.run = False
+
     with mp_hands.Hands(min_detection_confidence=min_detection_confidence,
                         min_tracking_confidence=min_tracking_confidence) as hands:
-        while True:
+        while st.session_state.run:
             ret, frame = capture.read()
             if not ret:
                 st.error("Failed to capture webcam frame.")
@@ -67,10 +84,7 @@ if start_webcam:
 
             # Convert BGR image to RGB for Streamlit
             frame_window.image(image, channels="BGR")
-
-            # Stop the webcam stream when "Stop" is pressed
-            if stop_webcam:
-                break
+            time.sleep(0.03)  # Add a small delay to reduce CPU usage
 
     capture.release()
     cv2.destroyAllWindows()
